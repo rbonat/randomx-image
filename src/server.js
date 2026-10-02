@@ -75,7 +75,7 @@ function pickFit(fit) {
   if (fit === undefined) return "cover";
   const normalized = fit.toLowerCase();
   if (!FIT_VALUES.has(normalized)) {
-    throw new Error("fit must be one of cover, contain, inside, outside");
+    throw new Error("fit must be one of cover, contain, inside, outside, smart");
   }
   return normalized;
 }
@@ -190,24 +190,45 @@ async function processImage(imageInput, query, acceptHeader = "", originalFilena
   }
 
   // Process image with sharp if any transformation is requested
-  let pipeline = sharp(imageInput, { failOn: "none" });
+let pipeline = sharp(imageInput, { failOn: "none" });
 
-  // Auto-orient based on EXIF data if no custom rotate transform is provided
-  const hasRotateTransform = transforms && transforms.some(t => t[0] === 'rotate');
-  if (!hasRotateTransform) {
-    pipeline = pipeline.rotate();
+// Auto-orient based on EXIF data if no custom rotate transform is provided
+const hasRotateTransform = transforms && transforms.some(t => t[0] === "rotate");
+if (!hasRotateTransform) {
+  pipeline = pipeline.rotate();
+}
+// Determine smart fit from the image aspect ratio
+let resizeFit = fit;
+if (
+  fit === "smart" &&
+  width !== undefined &&
+  height !== undefined
+) {
+  const metadata = await sharp(imageInput, { failOn: "none" }).metadata();
+  let imageWidth = metadata.width;
+  let imageHeight = metadata.height;
+  // EXIF orientations 5-8 rotate the image by 90 degrees
+  if (metadata.orientation >= 5 && metadata.orientation <= 8) {
+    [imageWidth, imageHeight] = [imageHeight, imageWidth];
   }
-
-  // Only resize if width or height is specified
-  if (width !== undefined || height !== undefined) {
-    pipeline = pipeline.resize({
-      width,
-      height,
-      fit,
-      withoutEnlargement
-    });
+  if (imageWidth && imageHeight) {
+    const imageAspect = imageWidth / imageHeight;
+    const targetAspect = width / height;
+    resizeFit = imageAspect >= targetAspect ? "contain" : "cover";
+  } else {
+    resizeFit = "cover";
   }
+}
 
+// Only resize if width or height is specified
+if (width !== undefined || height !== undefined) {
+  pipeline = pipeline.resize({
+    width,
+    height,
+    fit: resizeFit,
+    withoutEnlargement
+  });
+}
   // Apply custom transforms if provided
   if (transforms) {
     pipeline = applyTransforms(pipeline, transforms);
