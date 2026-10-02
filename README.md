@@ -14,7 +14,7 @@ A lightweight random image API service built with Node.js, Sharp, and Docker.
 - � Upload and transform images on-the-fly
 - 📐 Dynamic image resizing and cropping
 - 🎨 Multiple output formats: `auto`, `jpg`, `png`, `webp`, `tiff`, `avif`
-- ⚙️ Flexible parameters: `width`, `height`, `quality`, `withoutEnlargement`, `format`, `fit`
+- ⚙️ Flexible parameters: `width`, `height`, `quality`, `withoutEnlargement`, `format`, `fit`, `background`
 - 🚀 **Full Sharp API Access**: Complex image transformations via `transforms` parameter
 - 🐳 Easy maintenance with Docker volume mounting
 - ✅ Comprehensive test suite with 50+ test cases
@@ -84,7 +84,8 @@ GET /random-image
 | `quality` | integer | Output quality (1-100) |
 | `withoutEnlargement` | boolean | Prevent image upscaling (`true` or `1`) |
 | `format` | string | Output format: `auto`, `jpg`, `png`, `webp`, `tiff`, `avif` |
-| `fit` | string | Resize strategy: `cover`, `contain`, `inside`, `outside` (default: `cover`) |
+| `fit` | string | Resize strategy: `cover`, `contain`, `inside`, `outside`, `smart` (default: `cover`) |
+| `background` | string | Background mode for `fit=smart`: `blur` (optional) |
 | `transforms` | JSON array | Advanced Sharp API transformations |
 
 **Note**:
@@ -111,6 +112,13 @@ When both `width` and `height` are specified, the image processing behavior is c
 - **`outside`**: Ensures image meets minimum dimensions
   - Maintains aspect ratio
   - May exceed specified dimensions
+    
+- **`smart`**: Automatically chooses the best layout based on the image and target aspect ratios
+  - Landscape images use `contain` to preserve the complete image
+  - Portrait images use `contain` to preserve the complete image
+  - With `background=blur`, portrait images are displayed over a blurred version of the same image
+  - Requires both `width` and `height`
+  - Useful for displays with a fixed aspect ratio, such as wall panels and photo frames
 
 **Examples**:
 ```http
