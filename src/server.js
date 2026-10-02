@@ -246,84 +246,91 @@ async function processImage(imageInput, query, acceptHeader = "", originalFilena
    * Create a blurred, cover-fitted copy of the image as the background,
    * then place the complete image on top using contain.
    */
-  if (useBlurBackground) {
-    // Background
-    let backgroundPipeline = sharp(imageInput, { failOn: "none" })
-      .rotate()
-      .resize({
-        width,
-        height,
-        fit: "cover"
-      })
-      .blur(30);
+if (useBlurBackground) {
+  // Create blurred background filling the entire target area
+  const backgroundBuffer = await sharp(imageInput, { failOn: "none" })
+    .rotate()
+    .resize({
+      width,
+      height,
+      fit: "cover"
+    })
+    .blur(30)
+    .removeAlpha()
+    .jpeg({ quality: 90 })
+    .toBuffer();
 
-    // Foreground
-    let foregroundPipeline = sharp(imageInput, { failOn: "none" })
-      .rotate()
-      .resize({
-        width,
-        height,
-        fit: "contain",
-        withoutEnlargement
-      });
+  // Create the original image, fully visible, with transparent letterbox areas
+  let foregroundPipeline = sharp(imageInput, { failOn: "none" })
+    .rotate()
+    .resize({
+      width,
+      height,
+      fit: "contain",
+      withoutEnlargement,
+      background: {
+        r: 0,
+        g: 0,
+        b: 0,
+        alpha: 0
+      }
+    })
+    .ensureAlpha();
 
-    // Apply custom transforms to foreground only
-    if (transforms) {
-      foregroundPipeline = applyTransforms(foregroundPipeline, transforms);
-    }
-
-    const backgroundBuffer = await backgroundPipeline
-      .jpeg({ quality: 90 })
-      .toBuffer();
-
-    const foregroundBuffer = await foregroundPipeline
-      .png()
-      .toBuffer();
-
-    let compositePipeline = sharp(backgroundBuffer)
-      .composite([
-        {
-          input: foregroundBuffer,
-          gravity: "center"
-        }
-      ]);
-
-    const finalFormat = outputFormat || pickOutputFormat("auto", acceptHeader);
-
-    if (finalFormat === "jpg") {
-      compositePipeline = compositePipeline.jpeg(
-        quality !== undefined ? { quality } : {}
-      );
-    } else if (finalFormat === "png") {
-      compositePipeline = compositePipeline.png(
-        quality !== undefined ? { quality } : {}
-      );
-    } else if (finalFormat === "webp") {
-      compositePipeline = compositePipeline.webp(
-        quality !== undefined ? { quality } : {}
-      );
-    } else if (finalFormat === "tiff") {
-      compositePipeline = compositePipeline.tiff(
-        quality !== undefined ? { quality } : {}
-      );
-    } else if (finalFormat === "avif") {
-      compositePipeline = compositePipeline.avif(
-        quality !== undefined ? { quality } : {}
-      );
-    }
-
-    const output = await compositePipeline.toBuffer();
-
-    const mimeType =
-      mime.lookup(finalFormat === "jpg" ? "jpeg" : finalFormat) ||
-      "application/octet-stream";
-
-    return {
-      buffer: output,
-      mimeType
-    };
+  // Apply custom transforms to foreground only
+  if (transforms) {
+    foregroundPipeline = applyTransforms(foregroundPipeline, transforms);
   }
 
+  const foregroundBuffer = await foregroundPipeline
+    .png()
+    .toBuffer();
+
+  // Put the complete foreground image over the blurred background
+  let compositePipeline = sharp(backgroundBuffer)
+    .composite([
+      {
+        input: foregroundBuffer,
+        gravity: "center"
+      }
+    ]);
+
+  const finalFormat =
+    outputFormat || pickOutputFormat("auto", acceptHeader);
+
+  if (finalFormat === "jpg") {
+    compositePipeline = compositePipeline.jpeg(
+      quality !== undefined ? { quality } : {}
+    );
+  } else if (finalFormat === "png") {
+    compositePipeline = compositePipeline.png(
+      quality !== undefined ? { quality } : {}
+    );
+  } else if (finalFormat === "webp") {
+    compositePipeline = compositePipeline.webp(
+      quality !== undefined ? { quality } : {}
+    );
+  } else if (finalFormat === "tiff") {
+    compositePipeline = compositePipeline.tiff(
+      quality !== undefined ? { quality } : {}
+    );
+  } else if (finalFormat === "avif") {
+    compositePipeline = compositePipeline.avif(
+      quality !== undefined ? { quality } : {}
+    );
+  }
+
+  const output = await compositePipeline.toBuffer();
+
+  const mimeType =
+    mime.lookup(finalFormat === "jpg" ? "jpeg" : finalFormat) ||
+    "application/octet-stream";
+
+  return {
+    buffer: output,
+    mimeType
+  };
+}
   // Normal processing
   let pipeline = sharp(imageInput, { failOn: "none" });
 
