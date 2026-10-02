@@ -31,7 +31,7 @@ function getImageDir() {
 
 const INPUT_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".avif", ".gif", ".heic", ".heif"]);
 const OUTPUT_FORMATS = new Set(["auto", "jpg", "jpeg", "png", "webp", "tiff", "avif"]);
-const FIT_VALUES = new Set(["cover", "contain", "inside", "outside"]);
+const FIT_VALUES = new Set(["cover", "contain", "inside", "outside", "smart"]);
 
 function isTrue(value) {
   return value === "true" || value === "1";
