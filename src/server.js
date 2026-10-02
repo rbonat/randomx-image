@@ -164,16 +164,27 @@ async function processImage(imageInput, query, acceptHeader = "", originalFilena
   const fit = pickFit(query.fit);
   const outputFormat = query.format ? pickOutputFormat(query.format, acceptHeader) : null;
   const transforms = parseTransforms(query.transforms);
+  const background = query.background;
+
+  if (background !== undefined && background !== "blur") {
+    throw new Error("background must be blur");
+  }
 
   // If no transformation parameters are provided, return the original image
-  if (width === undefined && height === undefined && !outputFormat && quality === undefined && !transforms) {
+  if (
+    width === undefined &&
+    height === undefined &&
+    !outputFormat &&
+    quality === undefined &&
+    !transforms &&
+    background === undefined
+  ) {
     let imageBuffer;
     let mimeType;
 
     if (Buffer.isBuffer(imageInput)) {
-      // Input is a buffer (from upload)
       imageBuffer = imageInput;
-      // Get MIME type from original filename if available
+
       if (originalFilename) {
         const ext = path.extname(originalFilename).toLowerCase();
         mimeType = mime.lookup(ext) || "application/octet-stream";
@@ -181,7 +192,6 @@ async function processImage(imageInput, query, acceptHeader = "", originalFilena
         mimeType = "application/octet-stream";
       }
     } else {
-      // Input is a file path
       imageBuffer = fs.readFileSync(imageInput);
       mimeType = mime.lookup(path.extname(imageInput)) || "application/octet-stream";
     }
@@ -189,69 +199,193 @@ async function processImage(imageInput, query, acceptHeader = "", originalFilena
     return { buffer: imageBuffer, mimeType };
   }
 
-  // Process image with sharp if any transformation is requested
-let pipeline = sharp(imageInput, { failOn: "none" });
+  // Read metadata for smart fitting
+  let resizeFit = fit;
+  let useBlurBackground = false;
 
-// Auto-orient based on EXIF data if no custom rotate transform is provided
-const hasRotateTransform = transforms && transforms.some(t => t[0] === "rotate");
-if (!hasRotateTransform) {
-  pipeline = pipeline.rotate();
-}
-// Determine smart fit from the image aspect ratio
-let resizeFit = fit;
-if (
-  fit === "smart" &&
-  width !== undefined &&
-  height !== undefined
-) {
-  const metadata = await sharp(imageInput, { failOn: "none" }).metadata();
-  let imageWidth = metadata.width;
-  let imageHeight = metadata.height;
-  // EXIF orientations 5-8 rotate the image by 90 degrees
-  if (metadata.orientation >= 5 && metadata.orientation <= 8) {
-    [imageWidth, imageHeight] = [imageHeight, imageWidth];
-  }
-  if (imageWidth && imageHeight) {
-    const imageAspect = imageWidth / imageHeight;
-    const targetAspect = width / height;
-    resizeFit = imageAspect >= targetAspect ? "contain" : "cover";
-  } else {
-    resizeFit = "cover";
-  }
-}
+  if (
+    fit === "smart" &&
+    width !== undefined &&
+    height !== undefined
+  ) {
+    const metadata = await sharp(imageInput, { failOn: "none" }).metadata();
 
-// Only resize if width or height is specified
-if (width !== undefined || height !== undefined) {
-  pipeline = pipeline.resize({
-    width,
-    height,
-    fit: resizeFit,
-    withoutEnlargement
-  });
-}
+    let imageWidth = metadata.width;
+    let imageHeight = metadata.height;
+
+    // EXIF orientations 5-8 rotate the image by 90 degrees
+    if (metadata.orientation >= 5 && metadata.orientation <= 8) {
+      [imageWidth, imageHeight] = [imageHeight, imageWidth];
+    }
+
+    if (imageWidth && imageHeight) {
+      const imageAspect = imageWidth / imageHeight;
+      const targetAspect = width / height;
+
+      if (imageAspect >= targetAspect) {
+        // Landscape / wider than target
+        resizeFit = "contain";
+      } else {
+        // Portrait / narrower than target
+        resizeFit = "contain";
+
+        if (background === "blur") {
+          useBlurBackground = true;
+        }
+      }
+    } else {
+      resizeFit = "contain";
+    }
+  }
+
+  /*
+   * Special case:
+   *
+   * fit=smart + background=blur + portrait image
+   *
+   * Create a blurred, cover-fitted copy of the image as the background,
+   * then place the complete image on top using contain.
+   */
+  if (useBlurBackground) {
+    // Background
+    let backgroundPipeline = sharp(imageInput, { failOn: "none" })
+      .rotate()
+      .resize({
+        width,
+        height,
+        fit: "cover"
+      })
+      .blur(30);
+
+    // Foreground
+    let foregroundPipeline = sharp(imageInput, { failOn: "none" })
+      .rotate()
+      .resize({
+        width,
+        height,
+        fit: "contain",
+        withoutEnlargement
+      });
+
+    // Apply custom transforms to foreground only
+    if (transforms) {
+      foregroundPipeline = applyTransforms(foregroundPipeline, transforms);
+    }
+
+    const backgroundBuffer = await backgroundPipeline
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const foregroundBuffer = await foregroundPipeline
+      .png()
+      .toBuffer();
+
+    let compositePipeline = sharp(backgroundBuffer)
+      .composite([
+        {
+          input: foregroundBuffer,
+          gravity: "center"
+        }
+      ]);
+
+    const finalFormat = outputFormat || pickOutputFormat("auto", acceptHeader);
+
+    if (finalFormat === "jpg") {
+      compositePipeline = compositePipeline.jpeg(
+        quality !== undefined ? { quality } : {}
+      );
+    } else if (finalFormat === "png") {
+      compositePipeline = compositePipeline.png(
+        quality !== undefined ? { quality } : {}
+      );
+    } else if (finalFormat === "webp") {
+      compositePipeline = compositePipeline.webp(
+        quality !== undefined ? { quality } : {}
+      );
+    } else if (finalFormat === "tiff") {
+      compositePipeline = compositePipeline.tiff(
+        quality !== undefined ? { quality } : {}
+      );
+    } else if (finalFormat === "avif") {
+      compositePipeline = compositePipeline.avif(
+        quality !== undefined ? { quality } : {}
+      );
+    }
+
+    const output = await compositePipeline.toBuffer();
+
+    const mimeType =
+      mime.lookup(finalFormat === "jpg" ? "jpeg" : finalFormat) ||
+      "application/octet-stream";
+
+    return {
+      buffer: output,
+      mimeType
+    };
+  }
+
+  // Normal processing
+  let pipeline = sharp(imageInput, { failOn: "none" });
+
+  // Auto-orient based on EXIF data if no custom rotate transform is provided
+  const hasRotateTransform =
+    transforms && transforms.some(t => t[0] === "rotate");
+
+  if (!hasRotateTransform) {
+    pipeline = pipeline.rotate();
+  }
+
+  // Only resize if width or height is specified
+  if (width !== undefined || height !== undefined) {
+    pipeline = pipeline.resize({
+      width,
+      height,
+      fit: resizeFit,
+      withoutEnlargement
+    });
+  }
+
   // Apply custom transforms if provided
   if (transforms) {
     pipeline = applyTransforms(pipeline, transforms);
   }
 
   // Apply output format if specified
-  const finalFormat = outputFormat || pickOutputFormat("auto", acceptHeader);
+  const finalFormat =
+    outputFormat || pickOutputFormat("auto", acceptHeader);
+
   if (finalFormat === "jpg") {
-    pipeline = pipeline.jpeg(quality !== undefined ? { quality } : {});
+    pipeline = pipeline.jpeg(
+      quality !== undefined ? { quality } : {}
+    );
   } else if (finalFormat === "png") {
-    pipeline = pipeline.png(quality !== undefined ? { quality } : {});
+    pipeline = pipeline.png(
+      quality !== undefined ? { quality } : {}
+    );
   } else if (finalFormat === "webp") {
-    pipeline = pipeline.webp(quality !== undefined ? { quality } : {});
+    pipeline = pipeline.webp(
+      quality !== undefined ? { quality } : {}
+    );
   } else if (finalFormat === "tiff") {
-    pipeline = pipeline.tiff(quality !== undefined ? { quality } : {});
+    pipeline = pipeline.tiff(
+      quality !== undefined ? { quality } : {}
+    );
   } else if (finalFormat === "avif") {
-    pipeline = pipeline.avif(quality !== undefined ? { quality } : {});
+    pipeline = pipeline.avif(
+      quality !== undefined ? { quality } : {}
+    );
   }
 
   const output = await pipeline.toBuffer();
-  const mimeType = mime.lookup(finalFormat === "jpg" ? "jpeg" : finalFormat) || "application/octet-stream";
 
-  return { buffer: output, mimeType };
+  const mimeType =
+    mime.lookup(finalFormat === "jpg" ? "jpeg" : finalFormat) ||
+    "application/octet-stream";
+
+  return {
+    buffer: output,
+    mimeType
+  };
 }
 
 app.get("/health", (_req, res) => {
